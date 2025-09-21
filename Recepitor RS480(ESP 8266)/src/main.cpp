@@ -52,32 +52,6 @@ void piscaLed(int led)
   }
 }
 
-bool estadoMotor = false;      // estado do motor/LED
-bool stadoAnterior = HIGH;     // último estado do botão
-unsigned long ultimoDebounce = 0;
-const unsigned long debounceDelay = 50;
-
-void verificaBotao() {
-  bool stadoAtualBotao = digitalRead(b1);
-
-  // Se o botão mudou de estado, reinicia o debounce
-  if (stadoAtualBotao != stadoAnterior) {
-    ultimoDebounce = millis();
-  }
-
-  // Se passou tempo suficiente sem mudança, considera válido
-  if ((millis() - ultimoDebounce) > debounceDelay) {
-    // Detecta transição HIGH -> LOW (pressionado)
-    if (stadoAnterior == HIGH && stadoAtualBotao == LOW) {
-      estadoMotor = !estadoMotor; // alterna o estado
-      digitalWrite(L2, estadoMotor ? HIGH : LOW);
-      Serial.print("Motor: ");
-      Serial.println(estadoMotor ? "1" : "0");
-    }
-  }
-
-  stadoAnterior = stadoAtualBotao;
-}
 
 void callback(char *topic, byte *payload, unsigned int length)
 {
@@ -96,9 +70,6 @@ void callback(char *topic, byte *payload, unsigned int length)
   }
   Serial.println(r);
 }
-
-bool stadoAtualBotao = true;
-bool stadoLed = false;
 
 String Sensor1;
 String Sensor2;
@@ -166,7 +137,8 @@ void ConexaoWifi()
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 }
-
+bool estadoBTN = false;  // Estado do botão (controle de toggle)
+bool ultimoEstadoBotao = HIGH;  // Último estado lido do botão
 void setup()
 {
   pinMode(LED_CAIXA_VASIA_SERVIDOR, OUTPUT);
@@ -197,7 +169,6 @@ void setup()
 
 void loop()
 {
-  verificaBotao();
   if (!client.connected() && tentativa <= 5)
   {
     reconnect();
@@ -227,6 +198,7 @@ void loop()
     {
       char c = resultado.charAt(8);
       Sensor1 = c;
+      digitalWrite(LED_CAIXA_CHEIA_WIFI,!Sensor1.toInt());
     }
 
     if (resultado.startsWith("#SEN[2]"))
@@ -239,6 +211,7 @@ void loop()
     {
       char c = resultado.charAt(8);
       Sensor3 = c;
+      digitalWrite(LED_CAIXA_VASIA_SERVIDOR,!Sensor3.toInt());
     }
   }
   if (tempoAtual - ultimoTempo >= intervalo)
@@ -246,6 +219,15 @@ void loop()
     // Serial.println("Desconectado");
     digitalWrite(LED_BUILTIN, HIGH);
   }
+
+  bool leitura = digitalRead(b1);
+  // Detecta borda de descida (quando aperta)
+  if (leitura == LOW && ultimoEstadoBotao == HIGH) {
+    estadoBTN = !estadoBTN;                // Inverte o estado
+    digitalWrite(L2, estadoBTN);           // Atualiza saída
+    Motor = estadoBTN? "1" : "0";
+  }
+  ultimoEstadoBotao = leitura;  // Atualiza estado anterior
 
 }
 
