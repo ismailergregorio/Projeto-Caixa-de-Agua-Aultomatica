@@ -22,6 +22,12 @@ SoftwareSerial rs485Serial(RS485_RX, RS485_TX); // RX, TX
 
 String RecebimentoDeDados();
 
+int quantidadeDeSesores = 3;
+String stadoDoSensorAnterior[] = {"0", "0", "0", "0"};
+String stadoDoSensorAtual[] = {"1", "1", "1", "1"};
+
+int leds[] = {80,LED_CAIXA_CHEIA_WIFI, 80,LED_CAIXA_VASIA_SERVIDOR};
+
 unsigned long intervalo = 2000; // 1 segundo
 unsigned long ultimoTempo = 0;  // Armazena último tempo que o LED mudou
                                 // String dados;
@@ -52,7 +58,6 @@ void piscaLed(int led)
   }
 }
 
-
 void callback(char *topic, byte *payload, unsigned int length)
 {
   String r = "";
@@ -68,7 +73,7 @@ void callback(char *topic, byte *payload, unsigned int length)
   {
     digitalWrite(L2, HIGH);
   }
-  Serial.println(r);
+  // Serial.println(r);
 }
 
 String Sensor1;
@@ -83,6 +88,7 @@ void inity()
   client.publish("sensor/SEN[3]", Sensor3.c_str());
   client.publish("sensor/MOTOR", Motor.c_str());
 }
+
 int tentativa = 0;
 void reconnect()
 {
@@ -137,8 +143,8 @@ void ConexaoWifi()
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 }
-bool estadoBTN = false;  // Estado do botão (controle de toggle)
-bool ultimoEstadoBotao = HIGH;  // Último estado lido do botão
+bool estadoBTN = false;        // Estado do botão (controle de toggle)
+bool ultimoEstadoBotao = HIGH; // Último estado lido do botão
 void setup()
 {
   pinMode(LED_CAIXA_VASIA_SERVIDOR, OUTPUT);
@@ -174,61 +180,46 @@ void loop()
     reconnect();
   }
   client.loop();
+
   String resultado;
-
-  // Publicar mensagem a cada 1s
-  static unsigned long lastMsg = 0;
-  if (millis() - lastMsg > 1000)
-  {
-    lastMsg = millis();
-    String msg = "Olá do ESP!";
-    client.publish("teste/topico", msg.c_str());
-    inity();
-  }
-
-  unsigned long tempoAtual = millis();
   resultado = RecebimentoDeDados();
+  char stado;
   if (resultado.length() > 0)
   {
-    ultimoTempo = tempoAtual;
-    digitalWrite(LED_BUILTIN, LOW);
-    // Serial.println(resultado);
-
-    if (resultado.startsWith("#SEN[1]"))
+    for (int x = 0; x <= quantidadeDeSesores; x++)
     {
-      char c = resultado.charAt(8);
-      Sensor1 = c;
-      digitalWrite(LED_CAIXA_CHEIA_WIFI,!Sensor1.toInt());
-    }
+      if (resultado.startsWith("#SEN[" + String(x) + "]"))
+      {
+        stado = resultado.charAt(8);
+        if (String(stado) != stadoDoSensorAnterior[x])
+        {
+          Serial.println("sensor:" + resultado + ":  estado Anterior: " + stadoDoSensorAnterior[x]);
+          Serial.println(stadoDoSensorAnterior[x]);
+          digitalWrite(leds[x],!stadoDoSensorAtual[x].toInt());
 
-    if (resultado.startsWith("#SEN[2]"))
-    {
-      char c = resultado.charAt(8);
-      Sensor2 = c;
-    }
+          String s = "sensor/SEN["+ String(x) + "]";
 
-    if (resultado.startsWith("#SEN[3]"))
-    {
-      char c = resultado.charAt(8);
-      Sensor3 = c;
-      digitalWrite(LED_CAIXA_VASIA_SERVIDOR,!Sensor3.toInt());
+          String st = String(stado);
+
+          client.publish(s.c_str(), st.c_str());
+
+          stadoDoSensorAtual[x] = stadoDoSensorAnterior[x];
+          stadoDoSensorAnterior[x] = char(stado);
+        }
+      }
+      stado = ' ';
     }
-  }
-  if (tempoAtual - ultimoTempo >= intervalo)
-  {
-    // Serial.println("Desconectado");
-    digitalWrite(LED_BUILTIN, HIGH);
   }
 
   bool leitura = digitalRead(b1);
   // Detecta borda de descida (quando aperta)
-  if (leitura == LOW && ultimoEstadoBotao == HIGH) {
-    estadoBTN = !estadoBTN;                // Inverte o estado
-    digitalWrite(L2, estadoBTN);           // Atualiza saída
-    Motor = estadoBTN? "1" : "0";
+  if (leitura == LOW && ultimoEstadoBotao == HIGH)
+  {
+    estadoBTN = !estadoBTN;      // Inverte o estado
+    digitalWrite(L2, estadoBTN); // Atualiza saída
+    Motor = estadoBTN ? "1" : "0";
   }
-  ultimoEstadoBotao = leitura;  // Atualiza estado anterior
-
+  ultimoEstadoBotao = leitura; // Atualiza estado anterior
 }
 
 String RecebimentoDeDados()
