@@ -21,9 +21,34 @@ const char *password = "27270404";
 #define L2 D6                       // LED/Motor ligado ou desligado
 #define b1 D0                       // Botão de controle manual do motor
 
+// --- VARIAVEIS MQTT ----
+//---variaveis de envio
+String estadoCaixa = "estado/caixa";
+String estadoSenorDeNivel1MQTT = "estado/nivel[1]";
+String estadoSenorDeNivel2MQTT = "estado/nivel[2]";
+String estadoSenorDeNivel3MQTT = "estado/nivel[3]";
+String estadoBtnMotorDoEspMQTT = "estadoBtn/esp/motor";
+
+//---variaveis de recebimento do site
+String initSite = "init/atulisar";
+String estadoBtnMotorDoSite = "estadoBtn/site/motor";
+String estadoCaixaDoSite = "estado/site/caixa";
+
 //
 // --- VARIÁVEIS DE ESTADO ---
 //
+
+String nivelDaCaixa = "Vasio";
+bool estadoSensorDeNivel1 = true;
+bool estadoSensorDeNivel2 = true;
+bool estadoSensorDeNivel3 = true;
+
+bool estadoSensorDeNivel1Anterior = false;
+bool estadoSensorDeNivel2Anterior = false;
+bool estadoSensorDeNivel3Anterior = false;
+
+bool estadoSaidaDoMotor = false;
+
 bool estadoBTN = false;        // Estado atual do botão (toggle)
 bool ultimoEstadoBotao = HIGH; // Último estado lido do botão
 
@@ -33,10 +58,6 @@ bool ultimoEstadoBotao = HIGH; // Último estado lido do botão
 SoftwareSerial rs485Serial(RS485_RX, RS485_TX); // RX, TX
 
 String RecebimentoDeDados(); // Protótipo da função de leitura
-
-int quantidadeDeSesores = 3; // Quantidade total de sensores
-String stadoDoSensorAnterior[] = {"1", "1", "1", "1"};
-String stadoDoSensorAtual[] = {"0", "0", "0", "0"};
 
 // LEDs correspondentes aos sensores
 int leds[] = {80, LED_CAIXA_CHEIA_WIFI, 80, LED_CAIXA_VASIA_SERVIDOR};
@@ -77,24 +98,83 @@ void piscaLed(int led)
   }
 }
 
-//
-// --- FUNÇÃO: LIGA/DESLIGA MOTOR ---
-//
-String LigarMotor(int estadoRecebido)
+//--- FUNÇÃO VERIFICA ESTADO DOS SENSORES ---
+void enviaEstadoDoSensor(String resultado)
 {
-  digitalWrite(L2, estadoRecebido);
-  client.publish("stado/MOTOR", String(estadoRecebido).c_str());
-  return String(estadoRecebido);
+  String r = resultado.substring(0, 7);
+  int v = resultado.substring(8).toInt();
+
+  if (r == "#SEN[1]" && v != estadoSensorDeNivel1Anterior)
+  {
+    estadoSensorDeNivel1 = v;
+    client.publish(String(estadoSenorDeNivel1MQTT).c_str(), String(v).c_str());
+    Serial.println("#SEN[1]");
+    // estadoSensorDeNivel1Anterior = estadoSensorDeNivel1;
+  }
+  else if (r == "#SEN[2]" && v != estadoSensorDeNivel2Anterior)
+  {
+    estadoSensorDeNivel2 = v;
+    client.publish(String(estadoSenorDeNivel2MQTT).c_str(), String(v).c_str());
+    // estadoSensorDeNivel2Anterior = estadoSensorDeNivel2;
+  }
+  else if (r == "#SEN[3]" && v != estadoSensorDeNivel3Anterior)
+  {
+    estadoSensorDeNivel3 = v;
+    client.publish(String(estadoSenorDeNivel3MQTT).c_str(), String(v).c_str());
+    // estadoSensorDeNivel3Anterior = estadoSensorDeNivel3;
+  }
+}
+//--- FUNÇÃO VERIFICA NIVEL DE CAIXA ---
+void nivelCaixa()
+{
+
+  if (estadoSensorDeNivel1 != estadoSensorDeNivel1Anterior || estadoSensorDeNivel2 != estadoSensorDeNivel2Anterior ||
+      estadoSensorDeNivel3 != estadoSensorDeNivel3Anterior)
+  {
+    estadoSensorDeNivel1Anterior = estadoSensorDeNivel1;
+    estadoSensorDeNivel2Anterior = estadoSensorDeNivel2;
+    estadoSensorDeNivel3Anterior = estadoSensorDeNivel3;
+
+    String estado = String(estadoSensorDeNivel1) + "," +
+                    String(estadoSensorDeNivel2) + "," +
+                    String(estadoSensorDeNivel3);
+    if (estado == "0,1,1")
+    {
+      Serial.println("Vasio");
+      nivelDaCaixa = "Vasio";
+    }
+    else if (estado == "0,0,1")
+    {
+      nivelDaCaixa = "Metade";
+      Serial.println("Metade");
+    }
+    else if (estado == "0,0,0")
+    {
+      nivelDaCaixa = "Cheio";
+      Serial.println("Cheio");
+    }
+    else
+    {
+      nivelDaCaixa = "Erro na Leitura";
+      Serial.println("Erro na Leitura");
+    }
+    client.publish(String(estadoCaixa).c_str(), String(nivelDaCaixa).c_str());
+  }
 }
 
+void comtroleDoMoto(String mensagem = "")
+{
+  String v = mensagem;
+  Serial.println(v);
+  if (mensagem == "1" || mensagem == "0")
+  {
+    digitalWrite(L2, v.toInt());
+    estadoBTN = v.toInt();
+    client.publish(String(estadoBtnMotorDoEspMQTT).c_str(), String(estadoBTN).c_str());
+  }
+  ultimoEstadoBotao = estadoBTN;
+}
 //
-// --- VARIÁVEIS INICIAIS ---
-//
-int stadoledMotor = 0;
-String Sensor1 = stadoDoSensorAtual[0];
-String Sensor2 = stadoDoSensorAtual[1];
-String Sensor3 = stadoDoSensorAtual[2];
-String Motor = String(stadoledMotor);
 
 //
 // --- CALLBACK: RECEBE MENSAGENS MQTT ---
@@ -110,26 +190,21 @@ void callback(char *topic, byte *payload, unsigned int length)
   {
     message += (char)payload[i];
   }
-
-  // Atualização inicial dos sensores e motor
-  if (String(topic) == "init/atulisar")
+  if (String(topic) == initSite && message == "true")
   {
-    if (message == "true")
-    {
-      client.publish("sensor/SEN[1]", Sensor1.c_str());
-      client.publish("sensor/SEN[2]", Sensor2.c_str());
-      client.publish("sensor/SEN[3]", Sensor3.c_str());
-      client.publish("sensor/MOTOR", Motor.c_str());
-      client.publish("stado/MOTOR", LigarMotor(estadoBTN).c_str());
-    }
+    client.publish(String(estadoCaixa).c_str(), String(nivelDaCaixa).c_str());
+    client.publish(String(estadoSenorDeNivel1MQTT).c_str(), String(estadoSensorDeNivel1).c_str());
+    client.publish(String(estadoSenorDeNivel2MQTT).c_str(), String(estadoSensorDeNivel2).c_str());
+    client.publish(String(estadoSenorDeNivel3MQTT).c_str(), String(estadoSensorDeNivel3).c_str());
+    client.publish(String(estadoBtnMotorDoEspMQTT).c_str(), String(estadoBTN).c_str());
   }
-
-  // Controle remoto do motor
-  if (String(topic) == "s/sensor/MOTOR")
+  if (String(topic) == estadoBtnMotorDoSite)
   {
-    bool estadoRecebido = message.toInt();
-    LigarMotor(estadoRecebido);
-    estadoBTN = estadoRecebido;
+    comtroleDoMoto(message);
+  }
+  if (String(topic) == estadoCaixa)
+  {
+    client.publish(String(estadoCaixa).c_str(), String(nivelDaCaixa).c_str());
   }
 }
 
@@ -149,9 +224,8 @@ void reconnect()
       Serial.println(" Conectado!");
       digitalWrite(LED_CAIXA_VASIA_SERVIDOR, LOW);
 
-      client.subscribe("init/atulisar");
-      client.subscribe("s/sensor/MOTOR");
-      client.subscribe("stado/MOTOR");
+      client.subscribe(initSite.c_str());
+      client.subscribe(estadoBtnMotorDoSite.c_str());
     }
     else
     {
@@ -212,7 +286,8 @@ void setup()
 
   pinMode(RS485_CTRL, OUTPUT);
   digitalWrite(RS485_CTRL, LOW); // Inicialmente em recepção
-  rs485Serial.begin(9600);       // Deve coincidir com o baudrate do Arduino remoto
+
+  rs485Serial.begin(9600); // Deve coincidir com o baudrate do Arduino remoto
   delay(100);
 
   digitalWrite(LED_CAIXA_VASIA_SERVIDOR, LOW);
@@ -237,33 +312,11 @@ void loop()
 
   // Lê dados recebidos via RS485
   String resultado = RecebimentoDeDados();
-  char stado;
-
   if (resultado.length() > 0)
   {
-    // Processa estado dos sensores
-    for (int x = 0; x <= quantidadeDeSesores; x++)
-    {
-      if (resultado.startsWith("#SEN[" + String(x) + "]"))
-      {
-        stado = resultado.charAt(8);
-
-        if (String(stado) != stadoDoSensorAnterior[x])
-        {
-          Serial.println("Sensor: " + resultado +
-                         " | Estado Anterior: " + stadoDoSensorAnterior[x]);
-
-          digitalWrite(leds[x], !stadoDoSensorAtual[x].toInt());
-
-          String topic = "sensor/SEN[" + String(x) + "]";
-          client.publish(topic.c_str(), stadoDoSensorAnterior[x].c_str());
-
-          stadoDoSensorAtual[x] = stadoDoSensorAnterior[x];
-          stadoDoSensorAnterior[x] = char(stado);
-        }
-      }
-      stado = ' ';
-    }
+    // Serial.println("Entro");
+    enviaEstadoDoSensor(resultado);
+    nivelCaixa();
   }
 
   // --- LEITURA DO BOTÃO ---
@@ -273,11 +326,9 @@ void loop()
   if (leitura == LOW && ultimoEstadoBotao == HIGH)
   {
     estadoBTN = !estadoBTN; // Inverte o estado
-    stadoledMotor = estadoBTN;
-    LigarMotor(stadoledMotor);
-    Motor = estadoBTN ? "1" : "0";
 
-    client.publish("sensor/MOTOR", Motor.c_str());
+    digitalWrite(L2, estadoBTN);
+    client.publish(String(estadoBtnMotorDoEspMQTT).c_str(), String(estadoBTN).c_str());
   }
 
   ultimoEstadoBotao = leitura; // Atualiza o último estado do botão
