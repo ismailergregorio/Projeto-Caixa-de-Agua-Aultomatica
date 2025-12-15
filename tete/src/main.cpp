@@ -246,7 +246,7 @@ void comtroleDoMoto(String mensagem = "")
     digitalWrite(SAIDA_MOTOR, v.toInt());
     estadoBTN = v.toInt();
     client.publish(estadoBtnMotorDoEspMQTT.c_str(), String(estadoBTN).c_str());
-    nivelCaixa();
+    // nivelCaixa();
   }
   ultimoEstadoBotao = estadoBTN;
 }
@@ -264,7 +264,12 @@ void callback(char *topic, byte *payload, unsigned int length)
 
   if (String(topic) == initSite && message == "true")
   {
-    client.publish(estadoCaixa.c_str(), nivelDaCaixa.c_str());
+    if (estadoSensorDeNivel1 != estadoSensorDeNivel1Anterior ||
+        estadoSensorDeNivel2 != estadoSensorDeNivel2Anterior ||
+        estadoSensorDeNivel3 != estadoSensorDeNivel3Anterior)
+    {
+      client.publish(estadoCaixa.c_str(), nivelDaCaixa.c_str());
+    }
     client.publish(estadoSenorDeNivel1MQTT.c_str(), String(estadoSensorDeNivel1).c_str());
     client.publish(estadoSenorDeNivel2MQTT.c_str(), String(estadoSensorDeNivel2).c_str());
     client.publish(estadoSenorDeNivel3MQTT.c_str(), String(estadoSensorDeNivel3).c_str());
@@ -399,6 +404,7 @@ void loop()
   String resultado = RecebimentoDeDados();
   if (resultado.length() > 0)
   {
+    Serial.println(resultado);
     enviaEstadoDoSensor(resultado);
     // Atualiza LEDs da caixa
     nivelCaixa();
@@ -418,7 +424,7 @@ void loop()
   {
     estadoBTN = !estadoBTN; // Inverte
     digitalWrite(SAIDA_MOTOR, estadoBTN);
-    nivelCaixa();
+    // nivelCaixa();
     client.publish(estadoBtnMotorDoEspMQTT.c_str(), String(estadoBTN).c_str());
   }
   delay(10);
