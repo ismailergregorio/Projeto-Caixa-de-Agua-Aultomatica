@@ -1,12 +1,23 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoOTA.h>
+#include <ESPmDNS.h>
+
 
 //
 // --- CONFIGURAÇÕES DE REDE WIFI ---
 //
 const char *ssid = "Ismailer Gregorio Oi Fibra 2.4G";
 const char *password = "27270404";
+
+//
+// --- CONFIGURAÇÕES MQTT ---
+//
+const char *mqtt_server = "192.168.100.46";
+const int mqtt_port = 1883;
+const char *mqtt_user = "admin";
+const char *mqtt_pass = "123";
 
 //
 // --- DEFINIÇÃO DE PINOS ---
@@ -21,9 +32,11 @@ const char *password = "27270404";
 #define LED_CAIXA_CHEIA 25
 #define LED_CAIXA_METADE 26
 #define LED_CAIXA_VAZIA 27
+
 #define LED_CONEXAO_MQTT 14
 #define LED_CONEXAO_WIFI 12
 #define LED_COBEXAO_ARDUINO 13
+
 #define SAIDA_MOTOR 33
 
 // --- Botão ---
@@ -33,24 +46,20 @@ const char *password = "27270404";
 // --- VARIÁVEIS MQTT ---
 //
 
-// Envio de estados
-String estadoCaixa = "estado/caixa";
-String estadoSenorDeNivel1MQTT = "estado/nivel[1]";
-String estadoSenorDeNivel2MQTT = "estado/nivel[2]";
-String estadoSenorDeNivel3MQTT = "estado/nivel[3]";
-String estadoBtnMotorDoEspMQTT = "estadoBtn/esp/motor";
+// --- VARIÁVEIS MQTT CAIXA ---
+String sensorNivelCaixa1 = "caixa/sensor/nivel/1";
+String sensorNivelCaixa2 = "caixa/sensor/nivel/2";
+String sensorNivelCaixa3 = "caixa/sensor/nivel/3";
 
-// Recebimento de comandos do site
-String initSite = "init/atulisar";
-String estadoBtnMotorDoSite = "estadoBtn/site/motor";
-String estadoCaixaDoSite = "estado/site/caixa";
+String statusCaixa = "caixa/status"; // 0,1,2,3
+String comandoCaixa = "caixa/controle"; // 0,1,2,3
 
-//
-// --- VARIÁVEIS DE ESTADO ---
-//
+// --- VARIÁVEIS MQTT MOTOR ---
+String comandoMotor = "motor/controle";
+String statusMotor = "motor/status";
 
-// Estado atual do nível da caixa
-String nivelDaCaixa = "Vasio";
+// --- VARIÁVEIS MQTT SITE ou SERVIDOR ---
+String initSite = "site/init";
 
 // Estados atuais dos sensores (padrão TRUE = desligado)
 bool estadoSensorDeNivel1 = true;
@@ -64,6 +73,8 @@ bool estadoSensorDeNivel3Anterior = false;
 
 // Estado atual da saída do motor
 bool estadoSaidaDoMotor = false;
+
+String nivelDaCaixa;
 
 // Controle do botão (toggle)
 bool estadoBTN = false;
@@ -80,14 +91,6 @@ HardwareSerial rs485Serial(1);
 // Controle de piscagem (geral)
 unsigned long intervalo = 2000;
 unsigned long ultimoTempo = 0;
-
-//
-// --- CONFIGURAÇÕES MQTT ---
-//
-const char *mqtt_server = "192.168.100.5";
-const int mqtt_port = 1883;
-const char *mqtt_user = "meuuser";
-const char *mqtt_pass = "1234";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -179,17 +182,17 @@ void enviaEstadoDoSensor(String resultado)
   if (r == "#SEN[1]" && v != estadoSensorDeNivel1Anterior)
   {
     estadoSensorDeNivel1 = v;
-    client.publish(estadoSenorDeNivel1MQTT.c_str(), String(v).c_str());
+    client.publish(sensorNivelCaixa1.c_str(), String(v).c_str());
   }
   else if (r == "#SEN[2]" && v != estadoSensorDeNivel2Anterior)
   {
     estadoSensorDeNivel2 = v;
-    client.publish(estadoSenorDeNivel2MQTT.c_str(), String(v).c_str());
+    client.publish(sensorNivelCaixa2.c_str(), String(v).c_str());
   }
   else if (r == "#SEN[3]" && v != estadoSensorDeNivel3Anterior)
   {
     estadoSensorDeNivel3 = v;
-    client.publish(estadoSenorDeNivel3MQTT.c_str(), String(v).c_str());
+    client.publish(sensorNivelCaixa3.c_str(), String(v).c_str());
   }
 }
 
@@ -212,22 +215,23 @@ void nivelCaixa()
 
     if (estado == "0,1,1")
     {
-      nivelDaCaixa = "Vasio";
+      nivelDaCaixa = "1";
     }
     else if (estado == "0,0,1")
     {
-      nivelDaCaixa = "Metade";
+      nivelDaCaixa = "2";
     }
     else if (estado == "0,0,0")
     {
-      nivelDaCaixa = "Cheio";
+      nivelDaCaixa = "3";
     }
     else
     {
-      nivelDaCaixa = "Erro na Leitura";
+      nivelDaCaixa = "0";
     }
 
-    client.publish(estadoCaixa.c_str(), nivelDaCaixa.c_str());
+    client.publish(statusCaixa.c_str(), nivelDaCaixa.c_str());
+    client.publish(comandoCaixa.c_str(), nivelDaCaixa.c_str());
   }
   // Liga/desliga LEDs conforme o estado dos sensores
   digitalWrite(LED_CAIXA_CHEIA, !estadoSensorDeNivel3);
@@ -245,7 +249,7 @@ void comtroleDoMoto(String mensagem = "")
   {
     digitalWrite(SAIDA_MOTOR, v.toInt());
     estadoBTN = v.toInt();
-    client.publish(estadoBtnMotorDoEspMQTT.c_str(), String(estadoBTN).c_str());
+
     // nivelCaixa();
   }
   ultimoEstadoBotao = estadoBTN;
@@ -268,22 +272,20 @@ void callback(char *topic, byte *payload, unsigned int length)
         estadoSensorDeNivel2 != estadoSensorDeNivel2Anterior ||
         estadoSensorDeNivel3 != estadoSensorDeNivel3Anterior)
     {
-      client.publish(estadoCaixa.c_str(), nivelDaCaixa.c_str());
+      client.publish(statusCaixa.c_str(), nivelDaCaixa.c_str());
     }
-    client.publish(estadoSenorDeNivel1MQTT.c_str(), String(estadoSensorDeNivel1).c_str());
-    client.publish(estadoSenorDeNivel2MQTT.c_str(), String(estadoSensorDeNivel2).c_str());
-    client.publish(estadoSenorDeNivel3MQTT.c_str(), String(estadoSensorDeNivel3).c_str());
-    client.publish(estadoBtnMotorDoEspMQTT.c_str(), String(estadoBTN).c_str());
+    client.publish(sensorNivelCaixa1.c_str(), String(estadoSensorDeNivel1).c_str());
+    client.publish(sensorNivelCaixa2.c_str(), String(estadoSensorDeNivel2).c_str());
+    client.publish(sensorNivelCaixa3.c_str(), String(estadoSensorDeNivel3).c_str());
+    client.publish(statusCaixa.c_str(), String(nivelDaCaixa).c_str());
+    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
   }
 
-  if (String(topic) == estadoBtnMotorDoSite)
+  if (String(topic) == comandoMotor && message != String(estadoBTN).c_str())
   {
     comtroleDoMoto(message);
-  }
-
-  if (String(topic) == estadoCaixa)
-  {
-    client.publish(estadoCaixa.c_str(), nivelDaCaixa.c_str());
+    // client.publish(comandoMotor.c_str(), String(estadoBTN).c_str());
+    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
   }
 }
 
@@ -320,18 +322,21 @@ void reconnect()
     if (client.connect("ESP32Client", mqtt_user, mqtt_pass))
     {
       digitalWrite(LED_CONEXAO_MQTT, HIGH);
+      Serial.println("MQTT conectado");
       client.subscribe(initSite.c_str());
-      client.subscribe(estadoBtnMotorDoSite.c_str());
+      client.subscribe(comandoMotor.c_str());
     }
     else
     {
       tentativa++;
-      digitalWrite(LED_CONEXAO_MQTT, HIGH);
+      digitalWrite(LED_CONEXAO_MQTT, LOW);
+      Serial.println("Tentando conexão MQTT");
       delay(500);
     }
 
     if (tentativa >= 5)
     {
+      Serial.println("Conexão com o MQTT falhou");
       break;
     }
   }
@@ -383,6 +388,26 @@ void setup()
   delay(100);
 
   pinMode(BTN_MOTOR, INPUT_PULLUP);
+
+  ConexaoWifi();
+  Serial.println(WiFi.localIP());
+
+  // ===== OTA =====
+  ArduinoOTA.setHostname("esp32-caixa");
+  ArduinoOTA.setPassword("123456");
+
+  ArduinoOTA
+      .onStart([]()
+               { Serial.println("Iniciando OTA..."); })
+      .onEnd([]()
+             { Serial.println("\nOTA Finalizado"); })
+      .onProgress([](unsigned int progress, unsigned int total)
+                  { Serial.printf("Progresso: %u%%\r", (progress * 100) / total); })
+      .onError([](ota_error_t error)
+               { Serial.printf("Erro OTA[%u]: ", error); });
+
+  ArduinoOTA.begin();
+  Serial.println("OTA pronto!");
 }
 
 //
@@ -390,6 +415,10 @@ void setup()
 //
 void loop()
 {
+  ArduinoOTA.handle();
+
+  // digitalWrite(LED_BUILTIN,HIGH);
+
   // Mantém conexão MQTT
   if (!client.connected() && tentativa <= 5)
   {
@@ -424,8 +453,9 @@ void loop()
   {
     estadoBTN = !estadoBTN; // Inverte
     digitalWrite(SAIDA_MOTOR, estadoBTN);
-    // nivelCaixa();
-    client.publish(estadoBtnMotorDoEspMQTT.c_str(), String(estadoBTN).c_str());
+
+    client.publish(comandoMotor.c_str(), String(estadoBTN).c_str());
+    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
   }
   delay(10);
   ultimoEstadoBotao = leitura;
