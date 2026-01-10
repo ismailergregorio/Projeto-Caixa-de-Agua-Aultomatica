@@ -4,7 +4,6 @@
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 
-
 //
 // --- CONFIGURAÇÕES DE REDE WIFI ---
 //
@@ -51,7 +50,7 @@ String sensorNivelCaixa1 = "caixa/sensor/nivel/1";
 String sensorNivelCaixa2 = "caixa/sensor/nivel/2";
 String sensorNivelCaixa3 = "caixa/sensor/nivel/3";
 
-String statusCaixa = "caixa/status"; // 0,1,2,3
+String statusCaixa = "caixa/status";    // 0,1,2,3
 String comandoCaixa = "caixa/controle"; // 0,1,2,3
 
 // --- VARIÁVEIS MQTT MOTOR ---
@@ -62,12 +61,12 @@ String statusMotor = "motor/status";
 String initSite = "site/init";
 
 // Estados atuais dos sensores (padrão TRUE = desligado)
-bool estadoSensorDeNivel1 = true;
+bool estadoSensorDeNivel1 = false;
 bool estadoSensorDeNivel2 = true;
 bool estadoSensorDeNivel3 = true;
 
 // Estados anteriores dos sensores (para detectar mudança)
-bool estadoSensorDeNivel1Anterior = false;
+bool estadoSensorDeNivel1Anterior = true;
 bool estadoSensorDeNivel2Anterior = false;
 bool estadoSensorDeNivel3Anterior = false;
 
@@ -179,19 +178,27 @@ void enviaEstadoDoSensor(String resultado)
   String r = resultado.substring(0, 7);
   int v = resultado.substring(8).toInt();
 
+  if (r == "#SEN[2]" || r == "#SEN[3]")
+  {
+    v = (v == 1) ? 0 : 1;
+  }
+
   if (r == "#SEN[1]" && v != estadoSensorDeNivel1Anterior)
   {
     estadoSensorDeNivel1 = v;
     client.publish(sensorNivelCaixa1.c_str(), String(v).c_str());
+    // client.publish(sensorNivelCaixa1.c_str(), String(1).c_str());
   }
   else if (r == "#SEN[2]" && v != estadoSensorDeNivel2Anterior)
   {
     estadoSensorDeNivel2 = v;
+    // client.publish(sensorNivelCaixa1.c_str(), String(1).c_str());
     client.publish(sensorNivelCaixa2.c_str(), String(v).c_str());
   }
   else if (r == "#SEN[3]" && v != estadoSensorDeNivel3Anterior)
   {
     estadoSensorDeNivel3 = v;
+    // client.publish(sensorNivelCaixa1.c_str(), String(0).c_str());
     client.publish(sensorNivelCaixa3.c_str(), String(v).c_str());
   }
 }
@@ -213,15 +220,15 @@ void nivelCaixa()
                     String(estadoSensorDeNivel2) + "," +
                     String(estadoSensorDeNivel3);
 
-    if (estado == "0,1,1")
+    if (estado == "0,0,1")
     {
       nivelDaCaixa = "1";
     }
-    else if (estado == "0,0,1")
+    else if (estado == "0,1,1")
     {
       nivelDaCaixa = "2";
     }
-    else if (estado == "0,0,0")
+    else if (estado == "1,1,1")
     {
       nivelDaCaixa = "3";
     }
@@ -234,9 +241,9 @@ void nivelCaixa()
     client.publish(comandoCaixa.c_str(), nivelDaCaixa.c_str());
   }
   // Liga/desliga LEDs conforme o estado dos sensores
-  digitalWrite(LED_CAIXA_CHEIA, !estadoSensorDeNivel3);
-  digitalWrite(LED_CAIXA_METADE, !estadoSensorDeNivel2);
-  digitalWrite(LED_CAIXA_VAZIA, !estadoSensorDeNivel1);
+  digitalWrite(LED_CAIXA_CHEIA, estadoSensorDeNivel3);
+  digitalWrite(LED_CAIXA_METADE, estadoSensorDeNivel2);
+  digitalWrite(LED_CAIXA_VAZIA, estadoSensorDeNivel1);
 }
 
 //
@@ -253,6 +260,17 @@ void comtroleDoMoto(String mensagem = "")
     // nivelCaixa();
   }
   ultimoEstadoBotao = estadoBTN;
+}
+
+void controleAltomaticoMotor(bool estado)
+{
+  if (estado == 0 && estadoBTN == true)
+  {
+    digitalWrite(SAIDA_MOTOR, !estadoBTN);
+    estadoBTN = !estadoBTN;
+    ultimoEstadoBotao = estadoBTN;
+    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
+  }
 }
 
 //
@@ -428,6 +446,7 @@ void loop()
 
   // Monitora comunicação RS485
   monitorarComunicacao();
+  controleAltomaticoMotor(estadoSensorDeNivel3);
 
   // Lê dados da RS485
   String resultado = RecebimentoDeDados();
