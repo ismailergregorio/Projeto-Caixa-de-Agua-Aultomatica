@@ -178,8 +178,12 @@ void enviaEstadoDoSensor(String resultado)
   String r = resultado.substring(0, 7);
   int v = resultado.substring(8).toInt();
 
-  if (r == "#SEN[2]" || r == "#SEN[3]")
+  if (r == "#SEN[2]")
   {
+    v = (v == 1) ? 0 : 1;
+  }
+
+  if(r == "#SEN[3]"){
     v = (v == 1) ? 0 : 1;
   }
 
@@ -446,7 +450,7 @@ void loop()
 
   // Monitora comunicação RS485
   monitorarComunicacao();
-  controleAltomaticoMotor(estadoSensorDeNivel3);
+  controleAltomaticoMotor(estadoSensorDeNivel1);
 
   // Lê dados da RS485
   String resultado = RecebimentoDeDados();
