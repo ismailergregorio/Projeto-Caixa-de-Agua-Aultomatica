@@ -13,7 +13,7 @@ const char *password = "27270404";
 //
 // --- CONFIGURAÇÕES MQTT ---
 //
-const char *mqtt_server = "192.168.100.46";
+const char *mqtt_server = "ubunto-serve.local";
 const int mqtt_port = 1883;
 const char *mqtt_user = "admin";
 const char *mqtt_pass = "123";
