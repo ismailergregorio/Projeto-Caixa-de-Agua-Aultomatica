@@ -1,22 +1,17 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 
-//
-// --- CONFIGURAÇÕES DE REDE WIFI ---
-//
-const char *ssid = "Ismailer Gregorio Oi Fibra 2.4G";
-const char *password = "27270404";
-
-//
-// --- CONFIGURAÇÕES MQTT ---
-//
-const char *mqtt_server = "ubunto-serve.local";
-const int mqtt_port = 1883;
-const char *mqtt_user = "admin";
-const char *mqtt_pass = "123";
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include "dados_mqtt.h"
+#include "updateOTA.h"
+#include "conexaoWifi.h"
+#include "funcoesExecusao.h"
+#include <conexaoMQTT.h>
 
 //
 // --- DEFINIÇÃO DE PINOS ---
@@ -41,353 +36,285 @@ const char *mqtt_pass = "123";
 // --- Botão ---
 #define BTN_MOTOR 21 // Botão para ligar/desligar o motor
 
-//
-// --- VARIÁVEIS MQTT ---
-//
+#define quantSensores 3
 
-// --- VARIÁVEIS MQTT CAIXA ---
-String sensorNivelCaixa1 = "caixa/sensor/nivel/1";
-String sensorNivelCaixa2 = "caixa/sensor/nivel/2";
-String sensorNivelCaixa3 = "caixa/sensor/nivel/3";
+// ----valor inicial
+bool valorSensor1 = false;
+bool valorSensor2 = false;
+bool valorSensor3 = false;
 
-String statusCaixa = "caixa/status";    // 0,1,2,3
-String comandoCaixa = "caixa/controle"; // 0,1,2,3
+bool estadoBotao = false;
+bool valorStadoMotor = false;
+int nivel;
 
-// --- VARIÁVEIS MQTT MOTOR ---
-String comandoMotor = "motor/controle";
-String statusMotor = "motor/status";
+//-- Lista Dos Sensores --
+bool statusAnterior[quantSensores] = {
+    valorSensor1,
+    valorSensor2,
+    valorSensor3};
 
-// --- VARIÁVEIS MQTT SITE ou SERVIDOR ---
-String initSite = "site/init";
+bool statusAtual[quantSensores] = {
+    valorSensor1,
+    valorSensor2,
+    valorSensor3};
+//---- contrle do pisca----
+bool alertaLed = false;
 
-// Estados atuais dos sensores (padrão TRUE = desligado)
-bool estadoSensorDeNivel1 = false;
-bool estadoSensorDeNivel2 = true;
-bool estadoSensorDeNivel3 = true;
+//---- contrle do buttton----
 
-// Estados anteriores dos sensores (para detectar mudança)
-bool estadoSensorDeNivel1Anterior = true;
-bool estadoSensorDeNivel2Anterior = false;
-bool estadoSensorDeNivel3Anterior = false;
+//--- DECLARAÇÃO DE FUNÇOES ----
+bool piscaBool();
+bool contoladorDeLed(bool, bool);
+void atualizarLeds();
+bool lerBotao(int pino);
+int obterNivel();
+void verificaNivel(String linha);
+void ajustaNivel(int sensor, int valor);
+void ligarMotor();
+void desligarMotor();
 
-// Estado atual da saída do motor
-bool estadoSaidaDoMotor = false;
+// --- CONFIG WIFI ---
+const char *ssid = "Ismailer Gregorio Oi Fibra 2.4G";
+const char *password = "27270404";
 
-String nivelDaCaixa;
+// --- CONFIG MQTT ---
+const char *mqtt_server = "ubunto-serve.local";
+const int mqtt_port = 1883;
+const char *mqtt_user = "admin";
+const char *mqtt_pass = "123";
 
-// Controle do botão (toggle)
-bool estadoBTN = false;
-bool ultimoEstadoBotao = HIGH;
+String topcoStatusCaixa = "/statusCaixa";
+String topcoStatusMotor = "/statusMotor";
 
-// Controle de comunicação RS485
-unsigned long ultimoRecebimento = 0;
-const unsigned long tempoLimite = 1500; // 1.5 segundos sem comunicação = LED apaga
-bool dadosChegando = false;
+String topcoComandoCaixa = "/comandoCaixa";
+String topcoComandoMotor = "/comandoMotor";
 
 // Instância da Serial RS485 (UART1)
 HardwareSerial rs485Serial(1);
 
-// Controle de piscagem (geral)
-unsigned long intervalo = 2000;
-unsigned long ultimoTempo = 0;
-
+// --- MQTT
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-//
-// --- VARIÁVEIS PARA PISCA DE LED ---
-//
-unsigned long ultimoTempo_F = 0;
-bool estadoLed = LOW;
+String i = "22";
 
-//
-// --- FUNÇÃO: MONITORA COMUNICAÇÃO COM ARDUINO ---
-//
-void monitorarComunicacao()
+String id = "000" + i;
+String deviceId = "ESP32_TESTE" + i;
+String nome = "ESP32 TESTE" + i;
+String descricao = "Dispositivo de teste";
+String ip = WiFi.localIP().toString();
+String verssao = "v.0.0.1";
+String placa = "ESP32";
+
+DadosMqtt dadosMqtt(&client, id, deviceId, nome, descricao, placa, verssao);
+
+unsigned long ultimoEnvio = 0;
+const long intervalo = 5000;
+
+unsigned long tempoInicioSequencia = 0;
+unsigned long tempoPasso = 0;
+
+const int intervaloSequencia = 5000;
+const int intervaloPasso = 100;
+
+bool sequenciaAtiva = false;
+
+int passoAtual = 1;
+
+String listaDeComandos[] = {
+    "/search",
+    "/statusB",
+    "/wifi",
+    "/mqtt",
+    "/health1",
+    "/health2",
+    "/update"};
+
+void enviarValorCaixa(int dados)
 {
-  unsigned long agora = millis();
+  JsonDocument doc;
 
-  // Se passaram mais de 1.5s sem dados → consideramos desconectado
-  if (agora - ultimoRecebimento > tempoLimite)
-  {
-    dadosChegando = false;
-  }
+  doc["comando"] = dados;
 
-  // Atualiza o LED correspondente
-  digitalWrite(LED_COBEXAO_ARDUINO, dadosChegando ? HIGH : LOW);
+  char buffer[256];
+  serializeJson(doc, buffer);
+
+  client.publish(("iot/" + deviceId + topcoStatusCaixa).c_str(), buffer);
 }
 
-//
-// --- FUNÇÃO: PISCAR QUALQUER LED A CADA 250ms ---
-//
-void piscaLed(int led)
+void enviarValorMotor(bool dados)
 {
-  unsigned long tF = millis();
+  JsonDocument doc;
 
-  if (tF - ultimoTempo_F >= 250)
-  {
-    estadoLed = !estadoLed;
-    digitalWrite(led, estadoLed);
-    ultimoTempo_F = tF;
-  }
+  doc["comando"] = dados;
+
+  char buffer[256];
+  serializeJson(doc, buffer);
+
+  client.publish(("iot/" + deviceId + topcoStatusMotor).c_str(), buffer);
 }
 
-//
-// --- FUNÇÃO: PISCAGEM DOS LEDs DE NÍVEL QUANDO MOTOR ESTÁ ATIVO ---
-//
-void sinalisacaoMotor()
+void enviarValorTeste(String dados)
 {
-  unsigned long tF = millis();
+  JsonDocument doc;
 
-  if (tF - ultimoTempo_F >= 250)
-  {
-    ultimoTempo_F = tF;
-    estadoLed = !estadoLed;
+  doc["comando"] = dados;
 
-    // Desliga todos antes de acender só os necessários
-    digitalWrite(LED_CAIXA_VAZIA, LOW);
-    digitalWrite(LED_CAIXA_METADE, LOW);
-    digitalWrite(LED_CAIXA_CHEIA, LOW);
+  char buffer[256];
+  serializeJson(doc, buffer);
 
-    // Caixa cheia (0,0,0)
-    if (!estadoSensorDeNivel1 && !estadoSensorDeNivel2 && !estadoSensorDeNivel3)
-    {
-      digitalWrite(LED_CAIXA_CHEIA, estadoLed);
-      digitalWrite(LED_CAIXA_METADE, estadoLed);
-      digitalWrite(LED_CAIXA_VAZIA, estadoLed);
-    }
-    // Metade (0,0,1)
-    else if (!estadoSensorDeNivel1 && !estadoSensorDeNivel2)
-    {
-      digitalWrite(LED_CAIXA_METADE, estadoLed);
-      digitalWrite(LED_CAIXA_VAZIA, estadoLed);
-    }
-    // Vazio (0,1,1)
-    else if (!estadoSensorDeNivel1)
-    {
-      digitalWrite(LED_CAIXA_VAZIA, estadoLed);
-    }
-  }
+  client.publish(("iot/" + deviceId + "/testeCO").c_str(), buffer);
 }
 
-//
-// --- FUNÇÃO: PUBLICA ESTADOS DOS SENSORES SE HOUVER MUDANÇA ---
-//
-void enviaEstadoDoSensor(String resultado)
+void reconnectMQTT()
 {
-  String r = resultado.substring(0, 7);
-  int v = resultado.substring(8).toInt();
-
-  if (r == "#SEN[2]")
+  while (!client.connected())
   {
-    v = (v == 1) ? 0 : 1;
-  }
+    bool connected = ConexaoMQTT(client,
+                                 mqtt_server,
+                                 mqtt_port,
+                                 mqtt_user,
+                                 mqtt_pass,
+                                 deviceId.c_str(),
+                                 LED_CONEXAO_MQTT);
 
-  if(r == "#SEN[3]"){
-    v = (v == 1) ? 0 : 1;
-  }
-
-  if (r == "#SEN[1]" && v != estadoSensorDeNivel1Anterior)
-  {
-    estadoSensorDeNivel1 = v;
-    client.publish(sensorNivelCaixa1.c_str(), String(v).c_str());
-    // client.publish(sensorNivelCaixa1.c_str(), String(1).c_str());
-  }
-  else if (r == "#SEN[2]" && v != estadoSensorDeNivel2Anterior)
-  {
-    estadoSensorDeNivel2 = v;
-    // client.publish(sensorNivelCaixa1.c_str(), String(1).c_str());
-    client.publish(sensorNivelCaixa2.c_str(), String(v).c_str());
-  }
-  else if (r == "#SEN[3]" && v != estadoSensorDeNivel3Anterior)
-  {
-    estadoSensorDeNivel3 = v;
-    // client.publish(sensorNivelCaixa1.c_str(), String(0).c_str());
-    client.publish(sensorNivelCaixa3.c_str(), String(v).c_str());
-  }
-}
-
-//
-// --- FUNÇÃO: AVALIA O NÍVEL DA CAIXA BASEADO NOS SENSORES ---
-//
-void nivelCaixa()
-{
-  if (estadoSensorDeNivel1 != estadoSensorDeNivel1Anterior ||
-      estadoSensorDeNivel2 != estadoSensorDeNivel2Anterior ||
-      estadoSensorDeNivel3 != estadoSensorDeNivel3Anterior)
-  {
-    estadoSensorDeNivel1Anterior = estadoSensorDeNivel1;
-    estadoSensorDeNivel2Anterior = estadoSensorDeNivel2;
-    estadoSensorDeNivel3Anterior = estadoSensorDeNivel3;
-
-    String estado = String(estadoSensorDeNivel1) + "," +
-                    String(estadoSensorDeNivel2) + "," +
-                    String(estadoSensorDeNivel3);
-
-    if (estado == "0,0,1")
+    if (connected)
     {
-      nivelDaCaixa = "1";
-    }
-    else if (estado == "0,1,1")
-    {
-      nivelDaCaixa = "2";
-    }
-    else if (estado == "1,1,1")
-    {
-      nivelDaCaixa = "3";
+      Serial.println("Conectado!");
+      int tamanhoLista = sizeof(listaDeComandos) / sizeof(listaDeComandos[0]);
+
+      for (int i = 0; i < tamanhoLista; i++)
+      {
+        client.subscribe(("app/" + deviceId + listaDeComandos[i]).c_str());
+      }
+
+      client.subscribe("app/devices/search");
+
+      client.subscribe(("app/" + deviceId + topcoStatusCaixa).c_str());
+      client.subscribe(("app/" + deviceId + topcoStatusMotor).c_str());
+
+      client.subscribe(("app/" + deviceId + topcoComandoMotor).c_str());
+      client.subscribe(("app/" + deviceId + topcoComandoCaixa).c_str());
+
+      dadosMqtt.enviarStatusA();
     }
     else
     {
-      nivelDaCaixa = "0";
+      Serial.print("Falhou. rc=");
+      Serial.print(client.state());
+      Serial.println(" tentando novamente em 3s...");
+      delay(3000);
     }
-
-    client.publish(statusCaixa.c_str(), nivelDaCaixa.c_str());
-    client.publish(comandoCaixa.c_str(), nivelDaCaixa.c_str());
   }
-  // Liga/desliga LEDs conforme o estado dos sensores
-  digitalWrite(LED_CAIXA_CHEIA, estadoSensorDeNivel3);
-  digitalWrite(LED_CAIXA_METADE, estadoSensorDeNivel2);
-  digitalWrite(LED_CAIXA_VAZIA, estadoSensorDeNivel1);
 }
 
-//
-// --- FUNÇÃO: CONTROLE DO MOTOR (COMANDO DO SITE OU BOTÃO) ---
-//
-void comtroleDoMoto(String mensagem = "")
+bool deserializacaoJSON(String mensagem)
 {
-  String v = mensagem;
-  if (mensagem == "1" || mensagem == "0")
-  {
-    digitalWrite(SAIDA_MOTOR, v.toInt());
-    estadoBTN = v.toInt();
+  JsonDocument doc;
+  DeserializationError erro = deserializeJson(doc, mensagem);
 
-    // nivelCaixa();
+  if (!erro)
+  {
+    bool comando = doc["comando"];
+    return comando;
+    Serial.print("Comando: ");
+    Serial.println(comando); // 0
   }
-  ultimoEstadoBotao = estadoBTN;
-}
-
-void controleAltomaticoMotor(bool estado)
-{
-  if (estado == 0 && estadoBTN == true)
+  else
   {
-    digitalWrite(SAIDA_MOTOR, !estadoBTN);
-    estadoBTN = !estadoBTN;
-    ultimoEstadoBotao = estadoBTN;
-    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
+    Serial.println(erro.c_str());
   }
 }
 
-//
-// --- CALLBACK MQTT (RECEBE MENSAGENS DO BROKER) ---
-//
 void callback(char *topic, byte *payload, unsigned int length)
 {
+
   String message = "";
-  for (int i = 0; i < length; i++)
+  for (unsigned int i = 0; i < length; i++)
   {
     message += (char)payload[i];
   }
 
-  if (String(topic) == initSite && message == "true")
+  Serial.print("Mensagem: ");
+  Serial.println(message);
+
+  int tamanhoLista = sizeof(listaDeComandos) / sizeof(listaDeComandos[0]);
+
+  for (int i = 0; i < tamanhoLista; i++)
   {
-    if (estadoSensorDeNivel1 != estadoSensorDeNivel1Anterior ||
-        estadoSensorDeNivel2 != estadoSensorDeNivel2Anterior ||
-        estadoSensorDeNivel3 != estadoSensorDeNivel3Anterior)
+    int valor = String(topic).indexOf(listaDeComandos[i]);
+
+    if (valor != -1)
     {
-      client.publish(statusCaixa.c_str(), nivelDaCaixa.c_str());
+      return enviaComando(listaDeComandos[i], message, dadosMqtt);
     }
-    client.publish(sensorNivelCaixa1.c_str(), String(estadoSensorDeNivel1).c_str());
-    client.publish(sensorNivelCaixa2.c_str(), String(estadoSensorDeNivel2).c_str());
-    client.publish(sensorNivelCaixa3.c_str(), String(estadoSensorDeNivel3).c_str());
-    client.publish(statusCaixa.c_str(), String(nivelDaCaixa).c_str());
-    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
+  }
+  if (String(topic) == String("app/devices/search"))
+  {
+    Serial.println("chegou");
+  }
+  if (String(topic) == String("app/" + deviceId + topcoStatusCaixa))
+  {
+    enviarValorCaixa(nivel);
+  }
+  if (String(topic) == String("app/" + deviceId + topcoStatusMotor))
+  {
+    enviarValorMotor(valorStadoMotor);
   }
 
-  if (String(topic) == comandoMotor && message != String(estadoBTN).c_str())
+  if (String(topic) == String("app/" + deviceId + topcoComandoCaixa))
   {
-    comtroleDoMoto(message);
-    // client.publish(comandoMotor.c_str(), String(estadoBTN).c_str());
-    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
+    enviarValorCaixa(nivel);
   }
-}
-
-//
-// --- RECEBE DADOS DO ARDUINO VIA RS485 ---
-//
-String RecebimentoDeDados()
-{
-  String dados = "";
-
-  if (rs485Serial.available())
+  if (String(topic) == String("app/" + deviceId + topcoComandoMotor))
   {
-    dados = rs485Serial.readStringUntil('\n');
+    bool comando = deserializacaoJSON(String(message));
 
-    // Marca que chegou dado
-    dadosChegando = true;
-
-    // Atualiza o tempo da última comunicação
-    ultimoRecebimento = millis();
-  }
-
-  return dados;
-}
-
-//
-// --- TENTA RECONEXÃO MQTT ---
-//
-int tentativa = 0;
-
-void reconnect()
-{
-  while (!client.connected())
-  {
-    if (client.connect("ESP32Client", mqtt_user, mqtt_pass))
+    if (comando)
     {
-      digitalWrite(LED_CONEXAO_MQTT, HIGH);
-      Serial.println("MQTT conectado");
-      client.subscribe(initSite.c_str());
-      client.subscribe(comandoMotor.c_str());
+      ligarMotor();
     }
     else
     {
-      tentativa++;
-      digitalWrite(LED_CONEXAO_MQTT, LOW);
-      Serial.println("Tentando conexão MQTT");
-      delay(500);
-    }
-
-    if (tentativa >= 5)
-    {
-      Serial.println("Conexão com o MQTT falhou");
-      break;
+      desligarMotor();
     }
   }
 }
-
 //
-// --- CONECTA AO WIFI ---
+// --- RECEBE DADOS DO ARDUINO VIA RS485 ---
 //
-void ConexaoWifi()
+void RecebimentoDeDados(uint8_t ledArduino)
 {
-  WiFi.begin(ssid, password);
+  static unsigned long ultimoRecebimento = 0;
+  static unsigned long tempoPisca = 0;
+  static bool estadoLed = false;
 
-  while (WiFi.status() != WL_CONNECTED)
+  if (rs485Serial.available())
   {
-    delay(500);
-    piscaLed(LED_CONEXAO_WIFI);
+    String linha = rs485Serial.readStringUntil('\n');
+
+    ultimoRecebimento = millis();
+
+    digitalWrite(ledArduino, HIGH);
+
+    verificaNivel(linha);
   }
 
-  Serial.println("WiFi conectado!");
+  // Se ficou mais de 2 segundos sem receber dados
+  if (millis() - ultimoRecebimento >= 2000)
+  {
+    if (millis() - tempoPisca >= 500)
+    {
+      tempoPisca = millis();
+
+      estadoLed = !estadoLed;
+      digitalWrite(ledArduino, estadoLed);
+    }
+  }
 }
 
-//
-// --- SETUP GERAL ---
-//
 void setup()
 {
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
-
   pinMode(LED_CAIXA_CHEIA, OUTPUT);
   pinMode(LED_CAIXA_METADE, OUTPUT);
   pinMode(LED_CAIXA_VAZIA, OUTPUT);
@@ -396,12 +323,7 @@ void setup()
   pinMode(LED_COBEXAO_ARDUINO, OUTPUT);
 
   pinMode(SAIDA_MOTOR, OUTPUT);
-
-  Serial.begin(115200);
-  ConexaoWifi();
-
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(callback);
+  pinMode(BTN_MOTOR, INPUT_PULLUP);
 
   pinMode(RS485_CTRL, OUTPUT);
   digitalWrite(RS485_CTRL, LOW); // RS485 em modo RECEBER
@@ -409,11 +331,21 @@ void setup()
   rs485Serial.begin(9600, SERIAL_8N1, RS485_RX, RS485_TX);
   delay(100);
 
-  pinMode(BTN_MOTOR, INPUT_PULLUP);
+  Serial.begin(115200);
+  delay(100);
 
-  ConexaoWifi();
-  Serial.println(WiFi.localIP());
+  digitalWrite(LED_CAIXA_VAZIA, LOW);
+  digitalWrite(LED_CAIXA_METADE, LOW);
+  digitalWrite(LED_CAIXA_CHEIA, LOW);
 
+  digitalWrite(LED_CONEXAO_WIFI, LOW);
+  digitalWrite(LED_CONEXAO_MQTT, LOW);
+  digitalWrite(LED_COBEXAO_ARDUINO, LOW);
+
+  ConexaoWifi(ssid, password, LED_CONEXAO_WIFI);
+
+  client.setCallback(callback);
+ reconnectMQTT();
   // ===== OTA =====
   ArduinoOTA.setHostname("esp32-caixa");
   ArduinoOTA.setPassword("123456");
@@ -432,54 +364,200 @@ void setup()
   Serial.println("OTA pronto!");
 }
 
-//
-// --- LOOP PRINCIPAL ---
-//
 void loop()
 {
   ArduinoOTA.handle();
-
-  // digitalWrite(LED_BUILTIN,HIGH);
-
-  // Mantém conexão MQTT
-  if (!client.connected() && tentativa <= 5)
+  // Se cair WiFi, reconecta
+  if (WiFi.status() != WL_CONNECTED)
   {
-    reconnect();
+    Serial.println("Wifi desconectado!");
+    ConexaoWifi(ssid, password, LED_CONEXAO_WIFI);
   }
+
+  if (!client.connected())
+  {
+    Serial.println("MQTT desconectado!");
+    reconnectMQTT();
+  }
+
+  RecebimentoDeDados(LED_COBEXAO_ARDUINO);
+  estadoBotao = lerBotao(BTN_MOTOR);
+
+  if (estadoBotao)
+  {
+    if (valorStadoMotor)
+    {
+      desligarMotor();
+    }
+    else
+    {
+      ligarMotor();
+    }
+  }
+
+  if (obterNivel() <= 0 && valorStadoMotor)
+  {
+    desligarMotor();
+  }
+
   client.loop();
-
-  // Monitora comunicação RS485
-  monitorarComunicacao();
-  controleAltomaticoMotor(estadoSensorDeNivel1);
-
-  // Lê dados da RS485
-  String resultado = RecebimentoDeDados();
-  if (resultado.length() > 0)
-  {
-    Serial.println(resultado);
-    enviaEstadoDoSensor(resultado);
-    // Atualiza LEDs da caixa
-    nivelCaixa();
-  }
-
-  // LED piscando quando motor está ligado
-  if (estadoBTN)
-  {
-    sinalisacaoMotor();
-  }
-
-  // Leitura do botão do motor
-  bool leitura = digitalRead(BTN_MOTOR);
-
-  // Borda de descida (aperto)
-  if (leitura == LOW && ultimoEstadoBotao == HIGH)
-  {
-    estadoBTN = !estadoBTN; // Inverte
-    digitalWrite(SAIDA_MOTOR, estadoBTN);
-
-    client.publish(comandoMotor.c_str(), String(estadoBTN).c_str());
-    client.publish(statusMotor.c_str(), String(estadoBTN).c_str());
-  }
-  delay(10);
-  ultimoEstadoBotao = leitura;
+  executarSequenciasLoop(tempoInicioSequencia,
+                         intervaloSequencia,
+                         tempoPasso, intervaloPasso,
+                         sequenciaAtiva,
+                         passoAtual,
+                         dadosMqtt);
+  delay(20);
 }
+
+//--- funcçoes de controller-----
+
+bool piscaBool()
+{
+  static bool estado = false;
+  static unsigned long tempoAnterior = 0;
+
+  if (millis() - tempoAnterior >= 100)
+  {
+    tempoAnterior = millis();
+    estado = !estado;
+  }
+
+  return estado;
+}
+
+bool contoladorDeLed(bool controller, bool pisca = false)
+{
+  if (pisca && controller)
+  {
+    return piscaBool();
+  }
+  return controller;
+};
+
+void atualizarLeds()
+{
+  digitalWrite(LED_CAIXA_VAZIA,
+               contoladorDeLed(statusAtual[0], alertaLed));
+
+  digitalWrite(LED_CAIXA_METADE,
+               contoladorDeLed(statusAtual[1], alertaLed));
+
+  digitalWrite(LED_CAIXA_CHEIA,
+               contoladorDeLed(statusAtual[2], alertaLed));
+}
+
+bool lerBotao(int pino)
+{
+  static bool ultimoEstadoBotao = HIGH;
+  static bool estadoLeitura = HIGH;
+  static unsigned long ultimoTempo = 0;
+
+  const unsigned long debounce = 50;
+
+  bool leitura = digitalRead(pino);
+
+  // Detectou mudança?
+  if (leitura != estadoLeitura)
+  {
+    ultimoTempo = millis();
+    estadoLeitura = leitura;
+  }
+
+  // Espera estabilizar
+  if ((millis() - ultimoTempo) > debounce)
+  {
+    if (estadoLeitura != ultimoEstadoBotao)
+    {
+      ultimoEstadoBotao = estadoLeitura;
+
+      // Retorna true apenas no momento em que o botão é pressionado
+      if (ultimoEstadoBotao == LOW)
+      {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+int obterNivel()
+{ //              1                  2                  3
+  if (statusAtual[0] && !statusAtual[1] && !statusAtual[2])
+    return 100;
+
+  if (statusAtual[0] && !statusAtual[1] && statusAtual[2])
+    return 50;
+
+  if (statusAtual[0] && statusAtual[1] && statusAtual[2])
+    return 10;
+
+  if (!statusAtual[0] && statusAtual[1] && statusAtual[2])
+    return 0;
+
+  return -1;
+}
+
+void verificaNivel(String linha)
+{
+  if (!linha.startsWith("#SEN"))
+    return;
+
+  int sensor = linha.charAt(5) - '0'; // 1, 2 ou 3
+  bool valor = linha.charAt(8) - '0'; // false ou true
+
+  statusAtual[sensor - 1] = valor;
+
+  switch (sensor)
+  {
+  case 1:
+    digitalWrite(LED_CAIXA_VAZIA, contoladorDeLed(valor, alertaLed));
+    break;
+
+  case 2:
+    digitalWrite(LED_CAIXA_METADE, contoladorDeLed(!valor, alertaLed));
+    break;
+
+  case 3:
+    digitalWrite(LED_CAIXA_CHEIA, contoladorDeLed(!valor, alertaLed));
+    break;
+  }
+
+  ajustaNivel(sensor - 1, valor);
+  memcpy(statusAnterior, statusAtual, sizeof(statusAtual));
+}
+
+void ajustaNivel(int sensor, int valor)
+{
+  if (statusAnterior[sensor] != statusAtual[sensor])
+  {
+    nivel = obterNivel();
+    enviarValorCaixa(nivel);
+  }
+}
+void ligarMotor()
+{
+  if (obterNivel() >= 50)
+  {
+    valorStadoMotor = true;
+    alertaLed = valorStadoMotor;
+    digitalWrite(SAIDA_MOTOR, valorStadoMotor);
+    enviarValorMotor(valorStadoMotor);
+  }
+}
+
+void desligarMotor()
+{
+  valorStadoMotor = false;
+  alertaLed = valorStadoMotor;
+  digitalWrite(SAIDA_MOTOR, valorStadoMotor);
+  enviarValorMotor(valorStadoMotor);
+}
+
+// void resetarBtn()
+// {
+//   estadoRetencao = false;
+//   // ultimoEstadoBotao = HIGH;
+//   // estadoLeitura = HIGH;
+// }
